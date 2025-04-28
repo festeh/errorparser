@@ -140,22 +140,36 @@ type LogEntry struct {
 }
 
 // --- Parser Setup ---
-// Use a custom lexer definition that ignores whitespace but keeps EOL
-var parser = participle.MustBuild[LogEntry](
+
+// Common parser options used by both main and fallback parsers
+var commonParserOptions = []participle.Option{
 	participle.Lexer(lexer.NewTextScannerLexer(logLexer)),
 	participle.Elide("Whitespace"), // Ignore whitespace tokens between meaningful tokens
-	participle.UseLookahead(2),     // Use lookahead to help disambiguate
 	// Define Rest token explicitly to capture remaining line content
 	participle.Map(func(t lexer.Token) (lexer.Token, error) {
-		// Treat EOL as whitespace unless explicitly captured in grammar
-		// if t.Type == logLexer.Symbols()["EOL"] {
-		// 	t.Value = "" // Effectively ignore EOL unless matched by rule
-		// }
+		// This mapping seems intended to ignore EOL unless explicitly matched,
+		// but the current implementation doesn't modify the token.
+		// Keeping it as is for now, assuming it serves a purpose or was WIP.
+		// If EOL should be generally ignored, Elide("EOL") might be simpler.
 		return t, nil
 	}, "EOL"), // Apply mapping to EOL tokens
 	participle.Unquote("String"), // Automatically unquote string literals
 	participle.Capture("Rest", `.*`), // Define how to capture the 'Rest' of a line
+}
+
+// Main parser with lookahead 2
+var parser = participle.MustBuild[LogEntry](
+	append(commonParserOptions, participle.UseLookahead(2))...,
 )
+
+// Fallback parser for unmatched lines (simpler, less lookahead)
+var fallbackParser = participle.MustBuild[LogEntry](
+	append(commonParserOptions, participle.UseLookahead(1))...,
+	// Note: Fallback specifically targets capturing the whole line as Unmatched,
+	// so the grammar structure implies it might not need all common options,
+	// but reusing them is simpler for now.
+)
+
 
 // Parse function
 func ParseLogLine(line string) (*LogEntry, error) {
