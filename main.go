@@ -10,11 +10,13 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("Enter log lines (Ctrl+D to end):")
 
-	// Variable to potentially hold context from previous lines (e.g., Python File line)
-	var lastPythonFileRef *PythonFileRef
+	var lastPythonFileRef *PythonFileRef // Holds context between lines for Python errors
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		currentPythonFileRef := lastPythonFileRef // Preserve ref from previous line for this iteration
+		lastPythonFileRef = nil                   // Reset context for the *next* iteration by default
+
 		if line == "" {
 			continue
 		}
@@ -32,29 +34,26 @@ func main() {
 		info, isCompleteError := entry.GetErrorInfo()
 
 		if isCompleteError {
-			// If it's a Python error line, try to combine with previous FileRef
-			if entry.PythonError != nil && lastPythonFileRef != nil {
-				info.Filename = lastPythonFileRef.Filename
-				info.Line = lastPythonFileRef.Line
+			// If it's a Python error line, try to combine with the context from the previous line
+			if entry.PythonError != nil && currentPythonFileRef != nil {
+				info.Filename = currentPythonFileRef.Filename
+				info.Line = currentPythonFileRef.Line
 				fmt.Printf("Parsed Error (Python Context): %+v\n", info)
 			} else {
-				// Print standard parsed errors
+				// Print standard parsed errors (Flutter, Go, Go Panic, or Python without context)
 				fmt.Printf("Parsed Error: %+v\n", info)
 			}
-			lastPythonFileRef = nil // Reset context after using it
 		} else if entry.PythonFile != nil {
-			// Store Python File context for the next line
-			lastPythonFileRef = entry.PythonFile
+			// Store Python File context for the *next* line
+			lastPythonFileRef = entry.PythonFile // Override the default nil reset
 			fmt.Printf("Context (Python File): %s, Line %d\n", entry.PythonFile.Filename, entry.PythonFile.Line)
 		} else if entry.Unmatched != nil {
 			// Print lines that didn't match any specific error pattern
 			fmt.Printf("Unmatched Line: %s\n", *entry.Unmatched)
-			lastPythonFileRef = nil // Reset context on unmatched lines
 		} else {
 			// This case means parsing succeeded structurally but didn't match known types
-			// and wasn't caught by Unmatched. Could indicate a grammar issue.
+			// and wasn't caught by Unmatched. Could indicate a grammar issue or an unhandled LogEntry field.
 			fmt.Printf("Parsed but Unrecognized Structure: %+v\n", entry)
-			lastPythonFileRef = nil // Reset context
 		}
 	}
 

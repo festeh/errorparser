@@ -165,16 +165,13 @@ func ParseLogLine(line string) (*LogEntry, error) {
 	}
 	entry, err := parser.ParseString("", line)
 	if err != nil {
-		// Attempt to parse just as Unmatched if primary parse fails
-		fallbackParser := participle.MustBuild[LogEntry](
-			participle.Lexer(lexer.NewTextScannerLexer(logLexer)),
-			participle.Elide("Whitespace"),
-			participle.UseLookahead(1),
-			participle.Capture("Rest", `.*`),
-		)
-		entry, errFallback := fallbackParser.ParseString("", line)
+		// Attempt to parse just as Unmatched using the pre-built fallback parser
+		entryFallback, errFallback := fallbackParser.ParseString("", line)
 		// If fallback parsed *something* and it landed in Unmatched, return that.
-		if errFallback == nil && entry != nil && entry.Unmatched != nil {
+		if errFallback == nil && entryFallback != nil && entryFallback.Unmatched != nil {
+			// Trim trailing newline added earlier
+			*entryFallback.Unmatched = strings.TrimSuffix(*entryFallback.Unmatched, "\n")
+			return entryFallback, nil
 			// Trim trailing newline added earlier
 			*entry.Unmatched = strings.TrimSuffix(*entry.Unmatched, "\n")
 			return entry, nil
@@ -182,21 +179,26 @@ func ParseLogLine(line string) (*LogEntry, error) {
 		// Otherwise, return the original parsing error
 		return nil, fmt.Errorf("parsing error: %w on line: %s", err, line)
 	}
-	// Trim trailing newline from Rest if captured
+
+	// Trim trailing newline from captured fields centrally
+	trimSuffixNewline := func(s string) string {
+		return strings.TrimSuffix(s, "\n")
+	}
+
 	if entry.Unmatched != nil {
-		*entry.Unmatched = strings.TrimSuffix(*entry.Unmatched, "\n")
+		*entry.Unmatched = trimSuffixNewline(*entry.Unmatched)
 	}
-	if entry.Flutter != nil && entry.Flutter.Message != "" {
-		entry.Flutter.Message = strings.TrimSuffix(entry.Flutter.Message, "\n")
+	if entry.Flutter != nil {
+		entry.Flutter.Message = trimSuffixNewline(entry.Flutter.Message)
 	}
-	if entry.GoCompile != nil && entry.GoCompile.Message != "" {
-		entry.GoCompile.Message = strings.TrimSuffix(entry.GoCompile.Message, "\n")
+	if entry.GoCompile != nil {
+		entry.GoCompile.Message = trimSuffixNewline(entry.GoCompile.Message)
 	}
-	if entry.GoPanic != nil && entry.GoPanic.Message != "" {
-		entry.GoPanic.Message = strings.TrimSuffix(entry.GoPanic.Message, "\n")
+	if entry.GoPanic != nil {
+		entry.GoPanic.Message = trimSuffixNewline(entry.GoPanic.Message)
 	}
-	if entry.PythonError != nil && entry.PythonError.Message != "" {
-		entry.PythonError.Message = strings.TrimSuffix(entry.PythonError.Message, "\n")
+	if entry.PythonError != nil {
+		entry.PythonError.Message = trimSuffixNewline(entry.PythonError.Message)
 	}
 
 	return entry, nil
