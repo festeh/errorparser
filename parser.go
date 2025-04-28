@@ -5,7 +5,18 @@ import (
 	"strings"
 
 	"github.com/alecthomas/participle/v2"
+	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2/lexer"
+)
+
+// Language represents the type of log being parsed.
+type Language int
+
+const (
+	LangUnknown Language = iota
+	LangFlutter
+	LangPython
+	LangGo
 )
 
 // ErrorInfo holds the common structured information extracted from an error message.
@@ -126,22 +137,30 @@ func (e *GoPanic) ToErrorInfo() ErrorInfo {
 	return info
 }
 
-// --- Combined Grammar ---
-// LogEntry represents a potential line of log output.
-// We try parsing it as one of the known error formats.
-// Use @lexer.EOL to ensure we parse whole lines where appropriate.
-type LogEntry struct {
-	Flutter      *FlutterError    `( @@ EOL?` // Try Flutter format
-	GoCompile    *GoCompileError  `| @@ EOL?` // Try Go compile error
-	GoPanic      *GoPanic         `| @@ EOL?` // Try Go panic (first line)
-	PythonFile   *PythonFileRef   `| @@ EOL?` // Try Python File line
-	PythonError  *PythonErrorLine `| @@ EOL?` // Try Python Error line
-	Unmatched    *string          `| @Rest)`  // Catch-all for lines that don't match known patterns
+// --- Python Specific Grammar ---
+// PythonParseResult holds the result of parsing a single line of Python output.
+type PythonParseResult struct {
+	FileRef *PythonFileRef   `( @@ EOL?`
+	Error   *PythonErrorLine `| @@ EOL? )`
 }
+
+// --- Go Specific Grammar ---
+// GoParseResult holds the result of parsing a single line of Go output.
+type GoParseResult struct {
+	CompileError *GoCompileError `( @@ EOL?`
+	Panic        *GoPanic        `| @@ EOL? )`
+}
+
+// --- Unmatched Line ---
+// Represents a line that did not match the expected grammar for the selected language.
+type UnmatchedLine struct {
+	Content string `@Rest`
+}
+
 
 // --- Parser Setup ---
 
-// Common parser options used by both main and fallback parsers
+// Common parser options used across different language parsers
 var commonParserOptions = []participle.Option{
 	participle.Lexer(lexer.NewTextScannerLexer(logLexer)),
 	participle.Elide("Whitespace"), // Ignore whitespace tokens between meaningful tokens
@@ -157,90 +176,94 @@ var commonParserOptions = []participle.Option{
 	participle.Capture("Rest", `.*`), // Define how to capture the 'Rest' of a line
 }
 
-// Main parser with lookahead 2
-var parser = participle.MustBuild[LogEntry](
-	append(commonParserOptions, participle.UseLookahead(2))...,
+// Individual parsers for each language
+var (
+	flutterParser = participle.MustBuild[FlutterError](commonParserOptions...)
+
+	pythonParser = participle.MustBuild[PythonParseResult](
+		append(commonParserOptions, participle.UseLookahead(1))..., // Python grammar might be simpler
+	)
+
+	goParser = participle.MustBuild[GoParseResult](
+		append(commonParserOptions, participle.UseLookahead(1))..., // Go grammar might be simpler
+	)
+
+	// A simple parser to capture the entire line as 'Rest' for unmatched cases
+	unmatchedLineParser = participle.MustBuild[UnmatchedLine](
+		participle.Lexer(lexer.NewTextScannerLexer(logLexer)), // Use the same lexer
+		participle.Elide("Whitespace"),
+		participle.Capture("Rest", `.*`),
+	)
 )
 
-// Fallback parser for unmatched lines (simpler, less lookahead)
-var fallbackParser = participle.MustBuild[LogEntry](
-	append(commonParserOptions, participle.UseLookahead(1))...,
-	// Note: Fallback specifically targets capturing the whole line as Unmatched,
-	// so the grammar structure implies it might not need all common options,
-	// but reusing them is simpler for now.
-)
 
-
-// Parse function
-func ParseLogLine(line string) (*LogEntry, error) {
-	// Ensure the line ends with a newline for consistent EOL handling
+// ParseLine parses a single line of text based on the provided language context.
+// It returns the specific parsed struct (e.g., *FlutterError), *UnmatchedLine, or an error.
+func ParseLine(line string, lang Language) (interface{}, error) {
+	// Ensure the line ends with a newline for consistent EOL handling within grammars using EOL?
+	// Although, with separate parsers, EOL might be less critical unless explicitly needed.
+	// Let's keep it for now as grammars use EOL?.
 	if !strings.HasSuffix(line, "\n") {
 		line += "\n"
 	}
-	entry, err := parser.ParseString("", line)
-	if err != nil {
-		// Attempt to parse just as Unmatched using the pre-built fallback parser
-		entryFallback, errFallback := fallbackParser.ParseString("", line)
-		// If fallback parsed *something* and it landed in Unmatched, return that.
-		if errFallback == nil && entryFallback != nil && entryFallback.Unmatched != nil {
-			// Trim trailing newline added earlier
-			*entryFallback.Unmatched = strings.TrimSuffix(*entryFallback.Unmatched, "\n")
-			return entryFallback, nil
-			// Trim trailing newline added earlier
-			*entry.Unmatched = strings.TrimSuffix(*entry.Unmatched, "\n")
-			return entry, nil
+
+	var result interface{}
+	var err error
+
+	switch lang {
+	case LangFlutter:
+		parsed := &FlutterError{}
+		err = flutterParser.ParseString("", line, parsed)
+		if err == nil {
+			// Trim newline from message after successful parse
+			parsed.Message = strings.TrimSuffix(parsed.Message, "\n")
+			result = parsed
 		}
-		// Otherwise, return the original parsing error
-		return nil, fmt.Errorf("parsing error: %w on line: %s", err, line)
+	case LangPython:
+		parsed := &PythonParseResult{}
+		err = pythonParser.ParseString("", line, parsed)
+		if err == nil {
+			// Trim newline from message if PythonErrorLine was parsed
+			if parsed.Error != nil {
+				parsed.Error.Message = strings.TrimSuffix(parsed.Error.Message, "\n")
+			}
+			result = parsed
+		}
+	case LangGo:
+		parsed := &GoParseResult{}
+		err = goParser.ParseString("", line, parsed)
+		if err == nil {
+			// Trim newline from message after successful parse
+			if parsed.CompileError != nil {
+				parsed.CompileError.Message = strings.TrimSuffix(parsed.CompileError.Message, "\n")
+			}
+			if parsed.Panic != nil {
+				parsed.Panic.Message = strings.TrimSuffix(parsed.Panic.Message, "\n")
+			}
+			result = parsed
+		}
+	default:
+		return nil, fmt.Errorf("unknown language specified for parsing")
 	}
 
-	// Trim trailing newline from captured fields centrally
-	trimSuffixNewline := func(s string) string {
-		return strings.TrimSuffix(s, "\n")
+	// If parsing for the specific language failed, try parsing as an UnmatchedLine
+	if err != nil {
+		// Use the original line without the potentially added newline for UnmatchedLine parsing
+		originalLine := strings.TrimSuffix(line, "\n")
+		unmatched := &UnmatchedLine{}
+		// Use the dedicated unmatchedLineParser
+		errUnmatched := unmatchedLineParser.ParseString("", originalLine, unmatched)
+		if errUnmatched == nil {
+			// Successfully parsed as unmatched, return this instead of the original error
+			return unmatched, nil
+		}
+		// If even unmatched parsing failed (should be rare), return the original language parse error
+		return nil, fmt.Errorf("parsing error for lang %v: %w (line: %s)", lang, err, originalLine)
 	}
 
-	if entry.Unmatched != nil {
-		*entry.Unmatched = trimSuffixNewline(*entry.Unmatched)
-	}
-	if entry.Flutter != nil {
-		entry.Flutter.Message = trimSuffixNewline(entry.Flutter.Message)
-	}
-	if entry.GoCompile != nil {
-		entry.GoCompile.Message = trimSuffixNewline(entry.GoCompile.Message)
-	}
-	if entry.GoPanic != nil {
-		entry.GoPanic.Message = trimSuffixNewline(entry.GoPanic.Message)
-	}
-	if entry.PythonError != nil {
-		entry.PythonError.Message = trimSuffixNewline(entry.PythonError.Message)
-	}
-
-	return entry, nil
+	return result, nil
 }
 
-// Helper to extract the common ErrorInfo
-// Note: Python parsing is basic and might require combining info from multiple lines.
-func (l *LogEntry) GetErrorInfo() (ErrorInfo, bool) {
-	if l.Flutter != nil {
-		return l.Flutter.ToErrorInfo(), true
-	}
-	if l.GoCompile != nil {
-		return l.GoCompile.ToErrorInfo(), true
-	}
-	if l.GoPanic != nil {
-		// Go Panic parsing is simplified, may lack file/line info here
-		return l.GoPanic.ToErrorInfo(), true
-	}
-	// Python requires context (previous File line) - this basic version won't have full info
-	if l.PythonError != nil {
-		// We only have the error type and message from this line
-		return ErrorInfo{Type: l.PythonError.ErrType, Message: strings.TrimSpace(l.PythonError.Message)}, true
-	}
-	if l.PythonFile != nil {
-		// This line only contains file info, not the error itself
-		// We could potentially store this context for the next line.
-		// For now, return false as it's not a complete error message.
-		return ErrorInfo{Filename: l.PythonFile.Filename, Line: l.PythonFile.Line}, false // Indicate not a full error message
-	}
-	return ErrorInfo{}, false
-}
+// Note: The GetErrorInfo helper function is removed.
+// Logic for converting parsed structs to ErrorInfo will now reside in main.go,
+// allowing for context-specific handling (like Python's multi-line errors).
