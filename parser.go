@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
+	"fmt"
 	"strings"
 
-	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2/lexer"
 )
@@ -47,110 +47,6 @@ var logLexer = lexer.MustSimple([]lexer.SimpleRule{
 	{"Other", `.`}, // Catch any other single character
 })
 
-// --- Flutter Grammar ---
-// Example: lib/main.dart:9:1: Error: Type 'oid' not found.
-type FlutterError struct {
-	Filename string `@Path`
-	Line     int    `":" @Number`
-	Column   int    `":" @Number`
-	ErrType  string `":" @Word` // "Error", "Warning"
-	Message  string `":" @Rest`
-
-	Pos lexer.Position `parser:"-"`
-}
-
-func (e *FlutterError) ToErrorInfo() ErrorInfo {
-	col := e.Column
-	return ErrorInfo{
-		Filename: e.Filename,
-		Line:     e.Line,
-		Column:   &col,
-		Type:     e.ErrType,
-		Message:  strings.TrimSpace(e.Message),
-	}
-}
-
-// --- Python Grammar ---
-// Python errors often span multiple lines. We'll parse key lines individually.
-// Example 1: File "/home/dima/projects/errorparser/gcd.py", line 1
-type PythonFileRef struct {
-	Filename string `@FileStart @Path "\""` // Use Path inside quotes
-	Line     int    `"," "line" @Number`
-
-	Pos lexer.Position `parser:"-"`
-}
-
-// Example 2: ModuleNotFoundError: No module named 'foowe'
-// Example 3: SyntaxError: '(' was never closed
-type PythonErrorLine struct {
-	ErrType string `@Word` // e.g., ModuleNotFoundError, SyntaxError
-	Message string `":" @Rest`
-
-	Pos lexer.Position `parser:"-"`
-}
-
-// --- Go Grammar ---
-// Example 1: main.go:1:1: expected 'package', found 'EOF'
-// Example 2: ./main.go:4:2: undefined: fmt
-type GoCompileError struct {
-	Filename string `@Path`
-	Line     int    `":" @Number`
-	Column   int    `":" @Number`
-	Message  string `":" @Rest`
-
-	Pos lexer.Position `parser:"-"`
-}
-
-func (e *GoCompileError) ToErrorInfo() ErrorInfo {
-	col := e.Column
-	return ErrorInfo{
-		Filename: e.Filename,
-		Line:     e.Line,
-		Column:   &col,
-		Type:     "Error", // Go compiler errors are typically just "Error"
-		Message:  strings.TrimSpace(e.Message),
-	}
-}
-
-// Example 3: panic: runtime error: integer divide by zero
-// Followed by stack trace, e.g., /home/dima/projects/errorparser/main.go:9 +0x8d
-type GoPanic struct {
-	Message   string `@PanicStart @Rest` // Capture message after "panic:"
-	StackFile string `(@Path ":")?`      // Optional stack file line (simplified)
-	StackLine int    `@Number?`          // Optional stack line number
-
-	Pos lexer.Position `parser:"-"`
-}
-
-func (e *GoPanic) ToErrorInfo() ErrorInfo {
-	info := ErrorInfo{
-		Type:    "Panic",
-		Message: strings.TrimSpace(e.Message),
-	}
-	// Add file/line if parsed from stack (very basic parsing)
-	if e.StackFile != "" {
-		info.Filename = e.StackFile
-	}
-	if e.StackLine > 0 {
-		info.Line = e.StackLine
-	}
-	return info
-}
-
-// --- Python Specific Grammar ---
-// PythonParseResult holds the result of parsing a single line of Python output.
-type PythonParseResult struct {
-	FileRef *PythonFileRef   `( @@ EOL?`
-	Error   *PythonErrorLine `| @@ EOL? )`
-}
-
-// --- Go Specific Grammar ---
-// GoParseResult holds the result of parsing a single line of Go output.
-type GoParseResult struct {
-	CompileError *GoCompileError `( @@ EOL?`
-	Panic        *GoPanic        `| @@ EOL? )`
-}
-
 // --- Unmatched Line ---
 // Represents a line that did not match the expected grammar for the selected language.
 type UnmatchedLine struct {
@@ -176,24 +72,11 @@ var commonParserOptions = []participle.Option{
 	participle.Capture("Rest", `.*`), // Define how to capture the 'Rest' of a line
 }
 
-// Individual parsers for each language
-var (
-	flutterParser = participle.MustBuild[FlutterError](commonParserOptions...)
-
-	pythonParser = participle.MustBuild[PythonParseResult](
-		append(commonParserOptions, participle.UseLookahead(1))..., // Python grammar might be simpler
-	)
-
-	goParser = participle.MustBuild[GoParseResult](
-		append(commonParserOptions, participle.UseLookahead(1))..., // Go grammar might be simpler
-	)
-
-	// A simple parser to capture the entire line as 'Rest' for unmatched cases
-	unmatchedLineParser = participle.MustBuild[UnmatchedLine](
-		participle.Lexer(lexer.NewTextScannerLexer(logLexer)), // Use the same lexer
-		participle.Elide("Whitespace"),
-		participle.Capture("Rest", `.*`),
-	)
+// Parser for unmatched lines (defined here as it's language-agnostic)
+var unmatchedLineParser = participle.MustBuild[UnmatchedLine](
+	participle.Lexer(lexer.NewTextScannerLexer(logLexer)), // Use the same lexer
+	participle.Elide("Whitespace"),
+	participle.Capture("Rest", `.*`),
 )
 
 
