@@ -21,8 +21,10 @@ func main() {
 		selectedLang = LangPython
 	case "go":
 		selectedLang = LangGo
+	case "rust":
+		selectedLang = LangRust
 	default:
-		fmt.Fprintf(os.Stderr, "Error: Invalid or missing -lang flag. Please specify flutter, python, or go.\n")
+		fmt.Fprintf(os.Stderr, "Error: Invalid or missing -lang flag. Please specify flutter, python, go, or rust.\n")
 		os.Exit(1)
 	}
 
@@ -93,6 +95,11 @@ func main() {
 				// Should not happen if parser logic is correct
 				fmt.Printf("Parsed Python Structure (Empty): %+v\n", v)
 			}
+		case *RustMsgLine:
+			// Rust errors/warnings often print details on subsequent lines,
+			// which will be caught as Unmatched. This handles the main message line.
+			info := v.ToErrorInfo()
+			fmt.Printf("Parsed Message (Rust): %+v\n", info)
 		case *UnmatchedLine:
 			// Print lines that didn't match the specific language's error patterns
 			fmt.Printf("Unmatched Line: %s\n", v.Content)

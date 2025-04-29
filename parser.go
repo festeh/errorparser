@@ -17,6 +17,7 @@ const (
 	LangFlutter
 	LangPython
 	LangGo
+	LangRust
 )
 
 // ErrorInfo holds the common structured information extracted from an error message.
@@ -39,12 +40,16 @@ var logLexer = lexer.MustSimple([]lexer.SimpleRule{
 	// Path needs to handle various characters including '/', '.', '-', '_', and drive letters C: etc.
 	// Stop before ':' followed by a number (line number).
 	{"Path", `(?:[a-zA-Z]:)?(?:[\\/]?[\w\.\-_]+)+`},
-	{"PanicStart", `panic:`}, // Specific token for Go panics
-	{"FileStart", `File "`},   // Specific token for Python File lines
-	{"String", `"(\\"|[^"])*"`}, // Standard string literal for Python filenames
+	{"PanicStart", `panic:`},      // Specific token for Go panics
+	{"FileStart", `File "`},      // Specific token for Python File lines
+	{"String", `"(\\"|[^"])*"`},    // Standard string literal for Python filenames
+	{"ErrorCode", `E\d{4}`},       // Rust error code like E0308
+	{"Arrow", `-->`},              // Rust arrow pointing to source location
 	{"Colon", `:`},
 	{"Comma", `,`},
-	{"Other", `.`}, // Catch any other single character
+	{"LBracket", `\[`},            // Left square bracket for error code
+	{"RBracket", `\]`},            // Right square bracket for error code
+	{"Other", `.`},                // Catch any other single character
 })
 
 // --- Unmatched Line ---
@@ -123,6 +128,14 @@ func ParseLine(line string, lang Language) (interface{}, error) {
 			if parsed.Panic != nil {
 				parsed.Panic.Message = strings.TrimSuffix(parsed.Panic.Message, "\n")
 			}
+			result = parsed
+		}
+	case LangRust:
+		parsed := &RustMsgLine{}
+		err = rustParser.ParseString("", line, parsed)
+		if err == nil {
+			// Trim newline from message after successful parse
+			parsed.Message = strings.TrimSuffix(parsed.Message, "\n")
 			result = parsed
 		}
 	default:
